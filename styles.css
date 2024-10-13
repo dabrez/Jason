@@ -1,0 +1,153 @@
+/* Center the content on the screen */
+body {
+    /* font-family: Arial, sans-serif;
+     height: 100vh;  */
+    background-color: #000000;
+    font-family: Arial, sans-serif;
+  /* background-color: rgb(214, 117, 117); */
+    
+}
+
+.text-background {
+    background-color: white; /* Background color */
+    padding: 20px; /* Space around the text */
+    border-radius: 5px; /* Rounded corners */
+    font-size: 24px; /* Font size */
+    text-align: center; /* Center text */
+}
+
+/* Container for the input and button */
+.input-container {
+    /* justify-content: center; */
+    text-align: center;
+    align-items: center;
+    margin-top: 0%;
+   
+}
+
+.top-right-text {
+    position: absolute;
+    top: 20px;
+    right: 10px; 
+    /* left: 100;
+    right: 200; */
+    /* align-self: flex-end; */
+    /* justify-content: end; */
+    /* display: inline; */
+    margin-right: 10px;
+    font-size: 24px; /* Adjust font size as needed */
+    color: #ffffff; /* Text color */
+    font-family: Arial, sans-serif; /* Font family */
+}
+.white-box {
+    position: absolute;
+    bottom: 0;
+    background-color: white; /* Set background color to white */
+    width: 100%; /* Set width to 100% of the viewport */
+    height: 10%; /* Set height of the box */
+   
+}
+
+.top-right-text2 {
+    position: absolute;
+    top: 20px;
+    right: 180px;
+    margin-right: 40px;
+    font-size: 24px; /* Adjust font size as needed */
+    color: #ffffff; /* Text color */
+    font-family: Arial, sans-serif; /* Font family */
+}
+
+.top-right-text3 {
+    position: absolute;
+    top: 20px;
+    right: 1000px;
+    margin-right: 40px;
+    font-size: 24px; /* Adjust font size as needed */
+    color: #ffffff; /* Text color */
+    font-family: Arial, sans-serif; /* Font family */
+}
+
+.top-right-text4 {
+    position: absolute;
+    top: 20px;
+    right: 1300px;
+    margin-right: 40px;
+    font-size: 24px; /* Adjust font size as needed */
+    color: #ffffff; /* Text color */
+    font-family: Arial, sans-serif; /* Font family */
+}
+/* Rounded input box styling */
+.rounded-input {
+    text-align: center; /* Centered text */
+    text-decoration: none; /* No underline */
+    padding: 20px 30px;
+    width: 300px;
+    border: 2px solid #ccc;
+    border-radius: 25px;
+    outline: none;
+    font-size: 16px;
+    transition: border-color 0.3s ease;
+}
+
+/* Change border color on focus */
+.rounded-input:focus {
+    border-color: #007bff;
+}
+
+
+.submitOriginal {
+    background-color: #4CAF50; /* Green background */
+    border: none; /* No border */
+    color: white; /* White text */
+    padding: 15px 50px; /* Some padding */
+    text-align: center; /* Centered text */
+    text-decoration: none; /* No underline */
+    display: inline-block; /* Make it inline-block */
+    font-size: 16px; /* Large font size */
+    margin: 4px 2px; /* Some margin */
+    cursor: pointer; /* Pointer cursor on hover */
+    border-radius: 25px; /* Rounded corners */
+    transition: background-color 0.3s;
+}
+
+
+
+#quiz {
+    display: none;
+    max-width: 500px;
+    margin: 50px auto 0 auto;
+    padding: 20px;
+    background-color: #ffffff;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(198, 222, 60, 0.2);
+  }
+  
+  h1 {
+    text-align: center;
+    color: #333333;
+  }
+  
+  #question {
+    margin-bottom: 20px;
+  }
+  
+  #options {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  button {
+    display: block;
+    margin: 0 auto;
+    padding: 10px 20px;
+    background-color: rgb(255,165,0);
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  
+  button:hover {
+    background-color: #8f8d8d;
+  }

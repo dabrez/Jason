@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interactive Quiz</title>
+  <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1 style="color: white; text-align: center; font-size: 48px; margin-top: 0px;">ClipsGist</h1>
+    
+    <div class="top-right-text">Sign Up</div>
+    <div class="top-right-text2">Login</div>
+    <div class="top-right-text3">Reviews</div>
+    <div class="top-right-text4">Pricing</div>
+
+    <div style="align-items: flex-start; justify-content: center;" >
+
+        <div class="text-background">ClipsGist provides a way to compress long videos into a more concise format. Use visuals and quizzes to learn knowledge as effeciently as possible.  </div>
+    </div>
+  
+    <div class="input-container">
+        <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ8iwk1jSs7cm6oOMs5GnGqooot86HL94XT1g&s"   alt="Description of image" width="200" height="200">
+        <br />
+        <input type="url" id="input" class="rounded-input" placeholder="Paste your link here" />
+        <!-- <p id="output1" style="color:white">Start typing a URL</p> -->
+        <br />
+        <br />
+        <button type="submit" id = "submitButton" onclick="sendData()" class="submitOriginal">Submit </button>
+    </div>  
+
+  <div id="quiz">
+    <h1>Video Quiz!</h1>
+    <div id="question"></div>
+    <div id="options"></div>
+    <button id="submit">Submit</button>
+  </div>
+  <div id="output"></div>
+    <script>
+      document.getElementById("submitButton").addEventListener("click", function() {
+    setTimeout(function() {
+        document.getElementById("quiz").style.display = "block"; // Show the quiz after 3 seconds
+    }, 3000); // 3000 milliseconds = 3 seconds
+});
+        function sendData() {
+            var value = document.getElementById('input').value;
+            $.ajax({
+                url: '/process',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ 'value': value }),
+                success: function(response) {
+                    document.getElementById('output').innerHTML = response.result;
+                },
+                error: function(error) {
+                    console.log(error);
+                }
+            });
+        }
+    </script>
+  <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+
+</body>
+</html>
