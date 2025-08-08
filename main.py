@@ -1,11 +1,14 @@
 import numpy as np
 from sklearn.metrics import silhouette_score
-from youtube_transcript_api import YouTubeTranscriptApi
 import requests
 import re
 from urllib.parse import urlparse, parse_qs
 import nltk
 from nltk.tokenize import sent_tokenize
+import whisper
+from pytube import YouTube
+import os
+import tempfile
 
 
 from sentence_transformers import SentenceTransformer
@@ -56,11 +59,30 @@ class VideoTranscript:
         return match.group(1) if match else None
 
 
-    def getVideoText(self,link):
-        ## remember that you  need
+    def getVideoText(self, link):
+        """Downloads audio from the YouTube video and transcribes it using
+        OpenAI's Whisper model. Returns a list of segments with text,
+        start time, and duration."""
+        yt = YouTube(link)
+        audio_stream = yt.streams.filter(only_audio=True).first()
 
-        videoID = self.videoSlice(link)
-        return YouTubeTranscriptApi.get_transcript(videoID)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+            audio_path = tmp.name
+        audio_stream.download(filename=audio_path)
+
+        model = whisper.load_model("base")
+        result = model.transcribe(audio_path)
+
+        os.remove(audio_path)
+
+        transcript = []
+        for seg in result.get("segments", []):
+            transcript.append({
+                "text": seg["text"].strip(),
+                "start": seg["start"],
+                "duration": seg["end"] - seg["start"],
+            })
+        return transcript
         
     # def create_chapters(self, link):
     #     """Identifies the chapters/subsections of the video"""
@@ -174,16 +196,10 @@ class VideoTranscript:
         return titles
 
 # Below is for TESTING ONLY. We will implement the real thing on the site.
-
-
-link = input("Enter your youtube link here: ")
-
-myObject = VideoTranscript(link)
-
-isValidLink = myObject.check_youtube_link(link)
-
-print(myObject.getVideoText("https://www.youtube.com/watch?v=uSGVk2KVokQ"))
-
-# quiz = QuizGenerator(link)
-# quiz.sendMessage(["0:00", "1:00"], True)
-
+if __name__ == "__main__":
+    link = input("Enter your youtube link here: ")
+    myObject = VideoTranscript(link)
+    isValidLink = myObject.check_youtube_link(link)
+    print(myObject.getVideoText(link))
+    # quiz = QuizGenerator(link)
+    # quiz.sendMessage(["0:00", "1:00"], True)
