@@ -2,11 +2,7 @@ from flask import Flask, render_template, request, jsonify
 app = Flask(__name__)
 import asyncio
 from QuizGenerator import QuizGenerator
-from youtube_transcript_api import YouTubeTranscriptApi
-import requests
-LANG = "en"
-VIDEOID = "IGlTScXzpNg"
-url = f"http://video.google.com/timedtext?lang={LANG}&v={VIDEOID}"
+from main import VideoTranscript
 
 @app.route('/')
 def index():
@@ -15,20 +11,10 @@ def index():
 
 @app.route('/process', methods=['POST'])
 def process():
-    response = requests.get(url)
-    subtitles = ""
-    if response.status_code == 200:
-    # Get the content (typically XML for subtitles)
-        subtitles = response.text
-        # print(subtitles)
-    else:
-        print(f"Failed to retrieve subtitles. Status code: {response.status_code}")
-    data = request.get_json() # retrieve the data sent from JavaScript
-   
-    # print(YouTubeTranscriptApi.get_transcript("IGlTScXzpNg"))
-
-    
-    result = data['value'] 
+    data = request.get_json()  # retrieve the data sent from JavaScript
+    link = data['value']
+    segments = VideoTranscript(link).getVideoText(link)
+    subtitles = " ".join([seg['text'] for seg in segments])
     quiz_generator = QuizGenerator(subtitles)
 
     loop = asyncio.new_event_loop()
