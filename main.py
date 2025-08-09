@@ -3,23 +3,23 @@ from sklearn.metrics import silhouette_score
 import requests
 import re
 from urllib.parse import urlparse, parse_qs
-import nltk
-from nltk.tokenize import sent_tokenize
 import whisper
 from pytube import YouTube
 import os
 import tempfile
-
+import subprocess
+import shutil
 
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import AgglomerativeClustering
-from QuizGenerator import QuizGenerator
 
 ## get the video ID out of the\
 class VideoTranscript:
     def __init__(self, link: str):
         self.link = link
+        self.transcript = None
+        self.video_path = None
 
     def check_youtube_link(self, link):
         try:
@@ -59,30 +59,34 @@ class VideoTranscript:
         return match.group(1) if match else None
 
 
-    def getVideoText(self, link):
-        """Downloads audio from the YouTube video and transcribes it using
-        OpenAI's Whisper model. Returns a list of segments with text,
-        start time, and duration."""
-        yt = YouTube(link)
-        audio_stream = yt.streams.filter(only_audio=True).first()
-
+    def download_video(self):
+        """Downloads the full video and stores the path."""
+        yt = YouTube(self.link)
+        stream = (
+            yt.streams.filter(progressive=True, file_extension="mp4")
+            .order_by("resolution")
+            .desc()
+            .first()
+        )
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
-            audio_path = tmp.name
-        audio_stream.download(filename=audio_path)
+            self.video_path = tmp.name
+        stream.download(filename=self.video_path)
+        return self.video_path
 
+    def getVideoText(self):
+        """Transcribes the video's audio using Whisper."""
+        if self.video_path is None:
+            self.download_video()
         model = whisper.load_model("base")
-        result = model.transcribe(audio_path)
-
-        os.remove(audio_path)
-
-        transcript = []
+        result = model.transcribe(self.video_path)
+        self.transcript = []
         for seg in result.get("segments", []):
-            transcript.append({
+            self.transcript.append({
                 "text": seg["text"].strip(),
                 "start": seg["start"],
                 "duration": seg["end"] - seg["start"],
             })
-        return transcript
+        return self.transcript
         
     # def create_chapters(self, link):
     #     """Identifies the chapters/subsections of the video"""
@@ -113,7 +117,7 @@ class VideoTranscript:
     
     def preprocess_text(self):
         """Preprocesses the transcript text."""
-        if not self.transcript:
+        if self.transcript is None:
             self.getVideoText()
         self.texts = []
         self.time_stamps = []
@@ -195,11 +199,40 @@ class VideoTranscript:
             titles.append(title)
         return titles
 
+    def save_video_segments(self, chapters, titles=None, output_dir="segments"):
+        """Saves video segments based on chapter timestamps."""
+        if shutil.which("ffmpeg") is None:
+            raise EnvironmentError(
+                "ffmpeg is required to save video segments. "
+                "Install it from https://ffmpeg.org/ and ensure it is on your PATH."
+            )
+        if self.video_path is None:
+            self.download_video()
+        os.makedirs(output_dir, exist_ok=True)
+        for idx, chapter in enumerate(chapters):
+            start = chapter['start_time']
+            end = chapter['end_time']
+            filename = f"segment_{idx + 1}.mp4"
+            if titles:
+                safe_title = re.sub(r'[^a-zA-Z0-9_-]+', '_', titles[idx]).strip('_')
+                filename = f"{idx + 1:02d}_{safe_title}.mp4"
+            output_path = os.path.join(output_dir, filename)
+            subprocess.run([
+                "ffmpeg", "-y", "-i", self.video_path,
+                "-ss", str(start), "-to", str(end),
+                "-c", "copy", output_path
+            ], check=True)
+        return output_dir
+
 # Below is for TESTING ONLY. We will implement the real thing on the site.
 if __name__ == "__main__":
     link = input("Enter your youtube link here: ")
-    myObject = VideoTranscript(link)
-    isValidLink = myObject.check_youtube_link(link)
-    print(myObject.getVideoText(link))
-    # quiz = QuizGenerator(link)
-    # quiz.sendMessage(["0:00", "1:00"], True)
+    vt = VideoTranscript(link)
+    if vt.check_youtube_link(link):
+        vt.getVideoText()
+        chapters = vt.create_chapters()
+        titles = vt.generate_chapter_titles(chapters)
+        output_dir = vt.save_video_segments(chapters, titles)
+        print(f"Saved {len(chapters)} segments to {output_dir}")
+    else:
+        print("Invalid YouTube link")

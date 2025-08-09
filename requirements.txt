@@ -1,0 +1,8 @@
+pytube
+git+https://github.com/openai/whisper.git
+sentence-transformers
+scikit-learn
+numpy
+requests
+# System requirement:
+# ffmpeg (install from https://ffmpeg.org/ and ensure it is on your PATH)
