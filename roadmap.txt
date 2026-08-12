@@ -1,0 +1,243 @@
+ROADMAP
+=======
+Direction: turn this from a YouTube-only "cut a lecture into topic chapters" script
+into a multi-source clip factory for streamers/YouTubers/podcasters — ingest a long
+video or VOD, find the highlight-worthy moments, auto-cut short clips, and
+(eventually) reformat them vertically for Shorts/Reels/TikTok. An Adobe Premiere
+plugin is a later distribution target once there's a stable backend to call into.
+
+Current state (as of this writing)
+-----------------------------------
+- Phases 1-4 are implemented (see below) and Phase 3's multi-speaker crop
+  tracking plus the Phase 4 job/API layer have now been validated end-to-end
+  against a real ~96-minute YouTube video ("The Markets Have Gone Crazy |
+  Lemonade Stand", https://www.youtube.com/watch?v=mRyHFdC2CbA): full ingest
+  -> transcribe -> highlight-select -> cut -> multi-speaker vertical reformat
+  ran clean across all 14 selected clips. Three real bugs were found and
+  fixed by this real-footage run (see each phase's notes below) that no
+  amount of synthetic/unit testing had caught:
+  1. sources/youtube.py + sources/twitch.py: NamedTemporaryFile pre-created
+     the download destination file, which made yt-dlp treat it as "already
+     downloaded" and skip the real download, silently leaving a 0-byte
+     video. Fixed by reserving a path via tempfile.mkdtemp() instead of
+     pre-creating the file.
+  2. sources/youtube.py: yt-dlp's default client fallback chain currently
+     hits YouTube's signature/DRM protections (403s, DRM-protected tv-client
+     formats, n-challenge/SABR failures) -- an active, environment-wide
+     yt-dlp-vs-YouTube issue as of this testing, not specific to this repo.
+     Fixed by forcing player_client=android in extractor_args, whose
+     progressive (pre-merged, single-file) formats sidestep signature
+     deciphering entirely, capped at 360p -- plenty for transcription /
+     highlight scoring / face tracking.
+  3. reformat/crop.py: the crop-tracking code built one ffmpeg filter
+     expression with one nested if(between(...)) clause per 0.5s sample.
+     This silently breaks on any clip longer than ~35-40s -- confirmed
+     ffmpeg's expression parser accepts up to ~80 nested clauses but rejects
+     100+ -- which real highlight clips routinely exceed (several of this
+     video's 14 selected clips were 60-110s). Fixed by switching to ffmpeg's
+     sendcmd filter: per-frame x positions are precomputed in Python
+     (np.interp) and written to a plain-text timed-command file, which
+     sendcmd feeds to a named crop@1 filter with no expression-length limit.
+     Also had to get the sendcmd/crop filter ordering right: sendcmd must
+     precede the filter it targets in the chain, verified with a pixel-value
+     probe -- the reversed order runs without erroring but applies every
+     pan command one frame late.
+- main.py is a thin CLI on top of pipeline.py's ClipPipeline, which works
+  against both YouTube and Twitch VOD links.
+- flaskGUI.py / QuizGenerator.py: separate quiz-generation feature (Gemini),
+  loosely wired to the transcript pipeline (via a VideoTranscript compat shim
+  in main.py). Not part of the clipping path.
+- Everything still runs synchronously as a CLI script. No job queue, no API
+  surface for a future frontend or plugin to call -- that's Phase 4.
+
+Phase 1 — Multi-source ingestion [DONE]
+-----------------------------------------
+- Replaced pytube with yt-dlp (sources/youtube.py, sources/twitch.py) as the
+  download backend for both YouTube and Twitch VODs.
+- Added Twitch support: sources/twitch.py resolves VOD metadata via the Helix
+  API (client-credentials OAuth, needs TWITCH_CLIENT_ID/SECRET) and downloads
+  via yt-dlp.
+- sources/base.py defines a VideoSource interface (YouTubeSource, TwitchSource)
+  producing a local media file + metadata; sources.resolve_source(url) picks
+  the right one. pipeline.py's ClipPipeline is fully source-agnostic.
+- YouTubeSource.download() forces yt-dlp's android player_client (see "Current
+  state" above for why) and reserves its temp download path via
+  tempfile.mkdtemp() rather than NamedTemporaryFile (same fix applied to
+  TwitchSource.download(), which doesn't need the android-client change since
+  it goes through yt-dlp's Twitch extractor, not the YouTube one). Verified
+  against a real 96-minute video: downloads a 640x360 h264/aac mp4 in ~30s.
+- Not done: viewer-created Twitch Clips via Helix (would be a nice extra
+  signal into fusion.py later) and a LocalFileSource for direct file upload.
+  The android client's 360p cap on YouTube downloads hasn't been an issue for
+  anything downstream (transcription/scoring/face-tracking don't need more),
+  but would matter if the vertical output needs to look sharp at higher
+  resolution -- worth revisiting if that becomes a priority.
+
+Phase 2 — Highlight detection [DONE]
+----------------------------------------
+Implemented in highlights/: each signal module exposes a dense
+score_series(...) (per-time-bucket z-score against that video's own
+baseline), fused by highlights/fusion.py into one ranked candidate list,
+snapped to transcript sentence boundaries in pipeline.py's
+select_highlights(). Falls back to topic segmentation only if fusion finds no
+clear highlight anywhere.
+- Chat signal (Twitch only) — highlights/chat_spikes.py: message-rate z-score
+  per bucket, using TwitchDownloaderCLI for chat replay (Twitch has no public
+  REST endpoint for this).
+- Audio signal (any source) — highlights/audio_energy.py: RMS energy per
+  bucket via librosa, ffmpeg for audio extraction.
+- Semantic signal (any source) — highlights/semantic_hooks.py: local
+  heuristics (question/exclamation density, emphasis words) plus
+  embedding-distance shift between consecutive transcript segments (reuses
+  the existing sentence-transformer embeddings). Optional refinement pass via
+  a locally-running Ollama model (rank_with_ollama) -- off by default, falls
+  back cleanly to heuristic ranking if Ollama isn't reachable.
+- Fusion — highlights/fusion.py: weighted sum of whatever signals are
+  available (weights renormalize when e.g. chat is absent on YouTube).
+- Not done: viewer-created Twitch Clips as a signal input (see Phase 1 note);
+  tuning default weights/thresholds against real VODs rather than synthetic
+  test data; the Ollama pass is a single-shot rank call, not iterative.
+
+Phase 3 — Vertical reformatting (Shorts / Reels / TikTok) [DONE, incl. multi-speaker]
+------------------------------------------------------------------------------------
+Implemented in reformat/, wired into pipeline.py as ClipPipeline.reformat_clip()
+/ reformat_all() (opt-in via ClipPipeline.run(vertical=True)); runs on
+already-cut clips, so it composes with either clip-selection strategy from
+Phase 2.
+- Auto-crop 16:9 -> 9:16 — reformat/crop.py: samples frames, runs OpenCV's DNN
+  face detector (downloads a small model on first use, falls back to the
+  bundled Haar cascade if offline), drives a `crop` filter's time-varying
+  x-position via ffmpeg's `sendcmd` filter (one ffmpeg pass, no frame-by-frame
+  Python re-encoding). Falls back to a static center crop if no face is ever
+  detected in the clip.
+  Position track is precomputed per-output-frame in Python (np.interp
+  against the sampled face-center track) and written to a plain-text timed
+  sendcmd script (_write_crop_sendcmd_file), NOT a single ffmpeg filter
+  expression -- the original single-expression approach (one nested
+  if(between(...)) per sample) silently failed on any clip longer than
+  ~35-40s once real footage was tested (see "Current state" above); sendcmd
+  has no such length limit since it reads commands from a file line-by-line.
+  sendcmd must precede the crop@1 filter it targets in the filter chain
+  (verified empirically -- the reverse order applies each command one frame
+  late without erroring, confirmed via a pixel-value probe, not just a
+  clean-exit check).
+- Multi-speaker active-speaker tracking — reformat/crop.py's track_speakers()
+  (default path via crop_to_vertical(multi_speaker=True), also exposed as
+  ClipPipeline.run(multi_speaker=...)): detects all faces per sampled frame
+  (not just the largest), stitches them into persistent per-person tracks
+  with a greedy nearest-centroid matcher (tolerates brief occlusion/misses up
+  to TRACK_MAX_MISSES before dropping a track). Locates mouth landmarks per
+  tracked face via OpenCV-contrib's LBF facemark model (cv2.face, downloads
+  ~50MB model on first use, same cache pattern as the DNN face detector), and
+  scores each track's talking likelihood as rolling mouth-aspect-ratio (MAR)
+  variance over a short window (MAR_HISTORY_WINDOW), gated by an overall
+  audio-energy floor (extracted via ffmpeg+librosa) so a still face with
+  noisy landmark detection doesn't get mistaken for speech. The crop follows
+  whichever track currently "wins" that score, but only switches after
+  MIN_DWELL_SECONDS to avoid whip-panning between speakers on every syllable.
+  Automatically falls back to the original single-largest-face behavior when
+  at most one face is ever detected in a clip, or when cv2.face / the LBF
+  model isn't available (e.g. plain opencv-python instead of
+  opencv-contrib-python, or offline on first use) — so multi_speaker=True is
+  a safe default rather than a hard dependency.
+- Burned-in captions — reformat/captions.py: groups Whisper word timestamps
+  (transcribe() now requests word_timestamps=True) into 1-4 word bursts,
+  renders them as an ASS file (needed for styling; plain SRT can't do
+  bold/position/size) sized relative to the actual output resolution, burns
+  in via ffmpeg's `ass` filter (requires an ffmpeg build with libass).
+- requirements.txt now pins opencv-contrib-python<5 (was opencv-python<5) —
+  needed for cv2.face (LBF facemark model); it's a drop-in superset of
+  opencv-python so no other code changed. Still pinned below 5.x: opencv 5.0
+  dropped the bundled Haar cascade data files / CascadeClassifier binding
+  that the fallback face detector needs; caught by testing against a real
+  venv, not assumed.
+- Tested: unit-level coverage (_update_tracks, _mouth_aspect_ratio,
+  _resolve_active_speaker's dwell-time switching and audio-gating) against
+  synthetic track/landmark data caught two logic bugs early (a track-matching
+  loop that stopped incrementing misses once boxes ran out, and
+  active-speaker scoring that leaked future-frame MAR variance into
+  past-frame decisions). End-to-end: validated against a real 96-minute
+  single-speaker YouTube video (ffmpeg + opencv-contrib-python + the LBF
+  facemark model all confirmed working together on real footage) -- all 14
+  selected highlight clips (lengths 27s-110s) reformatted to 9:16 with
+  correct face-centered framing and captions, including the clip that
+  previously crashed ffmpeg's expression parser. That test run is also what
+  surfaced and got the sendcmd fix above.
+- Not done / known limitations:
+  - Still no accuracy validation against real *multi*-speaker footage (2+
+    people on screen at once) -- the test video so far was single-speaker,
+    so track_speakers() has only been exercised on its single-face fallback
+    path in the wild. The tracking/matching/switching logic itself is
+    unit-tested (see above) but the real-footage face-detection accuracy for
+    multiple simultaneous faces, and how natural the speaker-switching feels,
+    are both still unverified. *Next: test against multi-speaker
+    podcast/interview footage.*
+  - Speaker-switch tuning (MIN_DWELL_SECONDS=1.5s, MAR_HISTORY_WINDOW=6
+    samples/~3s, audio floor = 0.5x mean envelope) is a first guess, not
+    tuned against real conversational footage.
+  - Caption styling (font, size fraction, colors, burst length/timing) is a
+    single hardcoded default, not user-configurable yet.
+  - 1:1 (square) aspect ratio, mentioned in the original ask, isn't
+    implemented — only 9:16. Would reuse the same crop-tracking logic with a
+    different TARGET_ASPECT.
+
+Phase 4 — Backend/API rework [IN PROGRESS]
+--------------------------------
+Needed to support Phases 1-3 well and to eventually serve a plugin/frontend:
+- Move off synchronous CLI script to an async job pipeline: source -> transcribe
+  -> analyze/score -> cut -> reformat, with a job queue and status polling
+  (transcription + scoring are slow). [DONE, in-process backend]
+  jobs.py: Job dataclass (id/status/stage/error/result fields), JobStore
+  (thread-safe in-memory dict, get/put/list/update), JobRunner (submits a
+  job by spawning a daemon thread that walks ClipPipeline stage-by-stage --
+  ingest, transcribe, select_clips, cut, reformat -- updating job.stage as
+  it goes so pollers can show progress, not just done/not-done). Runs on
+  in-process threads with an in-memory store, not Celery/Redis -- chosen
+  deliberately to avoid new infra while still testing against real videos;
+  JobStore/JobRunner are small interfaces specifically so a persistent or
+  distributed backend can swap in later without changing clips_api.py's
+  calling convention. Known limitation: job state doesn't survive a process
+  restart, and it's single-process only (fine for local dev/testing, not for
+  production).
+- Flask app becomes a real API (submit job, poll status, fetch results) instead
+  of the current single ad-hoc /process route. [DONE]
+  clips_api.py: a Flask Blueprint (kept separate from flaskGUI.py's
+  unrelated quiz-generation route) exposing POST /api/jobs (submit a
+  url/vertical/use_ollama/multi_speaker payload, returns 202 + job id
+  immediately -- doesn't block on the pipeline), GET /api/jobs/<id> (poll
+  status/stage/clips/error), GET /api/jobs (list all), GET
+  /api/jobs/<id>/clips/<index>[?vertical=true] (download a cut clip).
+  flaskGUI.py registers the blueprint alongside its existing routes.
+  requirements.txt now includes flask explicitly (flaskGUI.py depended on it
+  already but it was missing from the pinned deps).
+- Tested so far: jobs.py's lifecycle (submit -> queued/running -> done, and
+  the failure path -> failed with captured traceback) and clips_api.py's
+  endpoints (400 on missing url, 404 on unknown job/out-of-range clip index,
+  200 with correct job-state serialization) have test coverage against a
+  mocked ClipPipeline/resolve_source, run in a real venv with flask
+  installed. Not yet tested against a real video end-to-end through the API
+  (needs a real venv with the full dependency set plus ffmpeg, and a test
+  video -- same gap as Phase 3's multi-speaker tracking).
+- Not done:
+  - No persistence (job state lost on restart) or multi-process support --
+    would need a real queue backend (Celery+Redis or RQ+Redis) to fix,
+    deliberately deferred.
+  - No auth/rate-limiting on the API -- fine for local testing, not for
+    anything public-facing.
+  - No job cancellation endpoint.
+  - clips_api.py's download endpoint serves files directly off local disk
+    (output_dir); no cleanup/expiry policy for old job output yet.
+
+Phase 5 — Adobe Premiere plugin (future)
+--------------------------------------------
+UXP/CEP panel that calls into the Phase 4 API to pull generated clips/highlight
+picks directly into a Premiere project. Deferred until the backend API is
+stable — different tech stack (JS, Adobe panel APIs) from the rest of the repo.
+
+Open questions to revisit
+--------------------------
+- Twitch API rate limits / auth model for pulling chat replay + viewer clips
+  at scale.
+- Where highlight scoring runs (local vs. hosted GPU) given Whisper + embedding
+  + LLM calls per video.
+- Licensing/ToS considerations for downloading YouTube/Twitch VODs at scale.

@@ -3,6 +3,9 @@ app = Flask(__name__)
 import asyncio
 from QuizGenerator import QuizGenerator
 from main import VideoTranscript
+from clips_api import clips_api
+
+app.register_blueprint(clips_api)
 
 @app.route('/')
 def index():

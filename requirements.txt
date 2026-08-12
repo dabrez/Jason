@@ -1,8 +1,35 @@
-pytube
+flask
+yt-dlp
 git+https://github.com/openai/whisper.git
 sentence-transformers
 scikit-learn
+librosa
+opencv-contrib-python<5
 numpy
 requests
-# System requirement:
-# ffmpeg (install from https://ffmpeg.org/ and ensure it is on your PATH)
+# System requirements:
+# ffmpeg (install from https://ffmpeg.org/ and ensure it is on your PATH; must
+#   be built with --enable-libass for vertical-reformat caption burn-in)
+# TwitchDownloaderCLI (only needed for Twitch chat-spike highlights;
+#   install from https://github.com/lay295/TwitchDownloader and ensure it is
+#   on your PATH)
+# Ollama (optional, only needed for LLM-based highlight re-ranking;
+#   install from https://ollama.com and run `ollama pull gpt-oss` or another
+#   model of your choice)
+#
+# opencv-contrib-python (not plain opencv-python) is required: it provides
+# cv2.face's LBF facemark model, used by reformat/crop.py's multi-speaker
+# active-speaker tracking to locate mouth landmarks per detected face. It's a
+# superset of opencv-python (same cv2 API plus the contrib modules), so it's
+# a drop-in replacement. Pinned below 5.x for the same reason as before:
+# opencv 5.0 dropped the bundled Haar cascade data files and
+# CascadeClassifier binding that reformat/crop.py uses as a fallback face
+# detector when the DNN model can't be downloaded. If cv2.face isn't
+# available (e.g. plain opencv-python got installed instead) or the LBF
+# model can't be downloaded, multi-speaker tracking degrades automatically
+# to the original single-largest-face behavior -- it's not a hard
+# dependency, just a better default when available.
+#
+# Environment variables (only needed for Twitch VOD support):
+# TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET
+#   Register an app at https://dev.twitch.tv/console/apps to obtain these.
