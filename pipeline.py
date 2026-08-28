@@ -15,6 +15,8 @@ another highlight signal means adding another scorer module with a
 score_series(...) function and wiring it into select_highlights below, not
 touching the cutting code.
 """
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -23,20 +25,23 @@ from typing import List, Optional
 
 import numpy as np
 import whisper
-from sentence_transformers import SentenceTransformer
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import silhouette_score
 
+from embeddings import get_embedder
 from highlights import audio_score_series, chat_score_series, fuse_highlights, semantic_score_series
 from highlights.chat_spikes import DEFAULT_BUCKET_SECONDS
 from reformat import burn_in_captions, crop_to_vertical
 from sources import VideoSource
 
+TRANSCRIPT_CACHE_DIR = "transcript_cache"
+
 
 class ClipPipeline:
-    def __init__(self, source: VideoSource):
+    def __init__(self, source: VideoSource, embedding_model: str = "all-MiniLM-L6-v2"):
         self.source = source
+        self.embedding_model = embedding_model
         self.transcript = None
         self.texts = None
         self.time_stamps = None
@@ -50,15 +55,40 @@ class ClipPipeline:
         return self.source.video_path
 
     # -- transcription ---------------------------------------------------
-    def transcribe(self):
+    def _transcript_cache_path(self) -> str:
+        """Cache key is a hash of the source video's path (not its content --
+        content-hashing a multi-hundred-MB file on every call would defeat
+        the point). Fine for the same-session/iterate-on-one-download
+        workflow this is meant for; a re-downloaded copy at a different temp
+        path will just re-transcribe.
+        """
+        key = hashlib.sha256(self.source.video_path.encode("utf-8")).hexdigest()[:16]
+        return os.path.join(TRANSCRIPT_CACHE_DIR, f"{key}.json")
+
+    def transcribe(self, use_cache: bool = True):
         """Transcribes the video's audio using Whisper. Requests word-level
         timestamps too (used by reformat/captions.py for word-by-word
         burned-in captions) -- stored per-segment as `words`, so existing
         segment-level consumers (topic segmentation, highlight scoring) are
         unaffected.
+
+        Whisper transcription is the slowest fixed cost in the pipeline
+        (~100s for a 96-minute video even on GPU) and is identical
+        regardless of which embedding model or highlight-scoring approach
+        gets tried afterwards, so the result is cached to disk keyed by the
+        video path -- lets you iterate on embedding models / highlight
+        scoring against the same transcript without re-running Whisper each
+        time. Pass use_cache=False to force a fresh transcription.
         """
         if self.source.video_path is None:
             self.ingest()
+
+        cache_path = self._transcript_cache_path()
+        if use_cache and os.path.exists(cache_path):
+            with open(cache_path, "r", encoding="utf-8") as f:
+                self.transcript = json.load(f)
+            return self.transcript
+
         model = whisper.load_model("base")
         result = model.transcribe(self.source.video_path, word_timestamps=True)
         self.transcript = []
@@ -72,6 +102,11 @@ class ClipPipeline:
                     for w in seg.get("words", [])
                 ],
             })
+
+        os.makedirs(TRANSCRIPT_CACHE_DIR, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(self.transcript, f)
+
         return self.transcript
 
     def word_timestamps(self):
@@ -98,8 +133,8 @@ class ClipPipeline:
     # -- topic segmentation (fallback path, any source) -------------------
     def _compute_embeddings(self):
         self._preprocess_text()
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        self.embeddings = model.encode(self.texts)
+        embedder = get_embedder(self.embedding_model)
+        self.embeddings = np.asarray(embedder.encode(self.texts))
 
     def _estimate_optimal_topics(self):
         max_topics = min(10, len(self.embeddings))
