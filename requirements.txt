@@ -7,6 +7,7 @@ librosa
 opencv-contrib-python<5
 numpy
 requests
+pytest
 # System requirements:
 # ffmpeg (install from https://ffmpeg.org/ and ensure it is on your PATH; must
 #   be built with --enable-libass for vertical-reformat caption burn-in)

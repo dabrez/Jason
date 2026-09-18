@@ -35,6 +35,7 @@ from embeddings import get_embedder  # noqa: E402
 from highlights import audio_score_series, fuse_highlights, semantic_score_series  # noqa: E402
 from highlights.base import HighlightWindow  # noqa: E402
 from highlights.chat_spikes import DEFAULT_BUCKET_SECONDS  # noqa: E402
+from pipeline import MAX_CLIP_SECONDS, ClipPipeline  # noqa: E402
 
 REVIEW_DIR = "review_clips"
 DEFAULT_TRANSCRIPT = "transcript_cache/ee0ebfd311aaf9f8.json"
@@ -61,13 +62,15 @@ def text_between(transcript: List[dict], start: float, end: float) -> str:
     ).strip()
 
 
-def segment_boundaries(transcript: List[dict]) -> List[float]:
-    return sorted({t for seg in transcript
-                   for t in (seg["start"], seg["start"] + seg["duration"])})
-
-
-def snap(target: float, boundaries: List[float]) -> float:
-    return min(boundaries, key=lambda b: abs(b - target)) if boundaries else target
+def make_pipeline(transcript: List[dict]) -> "ClipPipeline":
+    """A ClipPipeline bound to a transcript only, so the review set is cut
+    with the real boundary/cap logic rather than a copy of it -- a second
+    implementation here would drift from pipeline.py and the review set
+    would stop reflecting what actually ships.
+    """
+    p = ClipPipeline.__new__(ClipPipeline)
+    p.transcript = transcript
+    return p
 
 
 def build_windows(
@@ -94,12 +97,17 @@ def build_windows(
     windows = fuse_highlights(signals, bucket_seconds)
     print(f"  fused -> {len(windows)} candidate windows", flush=True)
 
-    boundaries = segment_boundaries(transcript)
+    pipe = make_pipeline(transcript)
+    sentence_starts, sentence_ends = pipe.sentence_boundaries()
     duration = max(s["start"] + s["duration"] for s in transcript)
 
     def to_record(w: HighlightWindow, group: str) -> dict:
-        start = snap(max(0.0, w.start - 5.0), boundaries)
-        end = snap(w.end + 5.0, boundaries)
+        start = pipe._snap_back(max(0.0, w.start - 5.0), sentence_starts)
+        end = pipe._snap_forward(w.end + 5.0, sentence_ends)
+        if end - start > MAX_CLIP_SECONDS:
+            start, end = pipe._trim_to_max(
+                start, end, MAX_CLIP_SECONDS, sentence_starts, sentence_ends
+            )
         return {
             "group": group,
             "start": start,
@@ -126,7 +134,8 @@ def build_windows(
         end = start + length
         if any(start < te and end > ts for ts, te in taken):
             continue
-        start, end = snap(start, boundaries), snap(end, boundaries)
+        start = pipe._snap_back(start, sentence_starts)
+        end = pipe._snap_forward(end, sentence_ends)
         if end - start < 10.0:
             continue
         body = text_between(transcript, start, end)

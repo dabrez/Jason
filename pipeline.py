@@ -37,6 +37,19 @@ from sources import VideoSource
 
 TRANSCRIPT_CACHE_DIR = "transcript_cache"
 
+# A word ending in .?! (allowing a trailing quote/bracket) ends a sentence.
+_SENTENCE_END_RE = re.compile(r'[.?!]["\')\]]*\s*$')
+
+# Clips longer than this are trimmed back to their highest-scoring stretch:
+# a very long window has usually bridged a topic change, and vertical
+# platforms want short clips regardless.
+MAX_CLIP_SECONDS = 75.0
+
+# How far a boundary snap may move an edge. Beyond this, the nearest
+# sentence boundary is too far away to be the right cut point -- see
+# _snap_back for why an unbounded search is unsafe on real transcripts.
+MAX_SNAP_SHIFT = 12.0
+
 
 class ClipPipeline:
     def __init__(self, source: VideoSource, embedding_model: str = "all-MiniLM-L6-v2"):
@@ -182,15 +195,24 @@ class ClipPipeline:
         pad_seconds: float = 5.0,
         bucket_seconds: float = DEFAULT_BUCKET_SECONDS,
         use_ollama: bool = False,
+        max_clip_seconds: float = MAX_CLIP_SECONDS,
     ):
         """Combines whatever highlight signals are available for this source
         (chat spikes on Twitch, audio energy and semantic hooks on any
-        source) into one ranked list of candidate clips, snapped to the
-        nearest transcript segment boundary.
+        source) into one ranked list of candidate clips, aligned to sentence
+        boundaries.
 
         Chat and audio are computed unconditionally when available; semantic
         scoring needs sentence embeddings, so it reuses _compute_embeddings
         (also used by topic segmentation) rather than re-encoding text twice.
+
+        Highlight windows come back aligned to the scoring grid
+        (bucket_seconds), which has no relationship to where anyone finishes
+        a thought. Snapping outward to sentence boundaries -- start backward
+        to a sentence start, end forward to a sentence end -- is what keeps
+        a clip from opening mid-clause or cutting off mid-word. Snapping to
+        the *nearest* boundary in either direction, as this used to do, cuts
+        into speech about half the time by construction.
         """
         if self.transcript is None:
             self.transcribe()
@@ -210,13 +232,17 @@ class ClipPipeline:
             texts = [self._text_between(w.start, w.end) for w in windows]
             windows = rank_with_ollama(windows, texts)
 
-        boundaries = sorted({t for pair in self._segment_boundaries() for t in pair})
+        sentence_starts, sentence_ends = self.sentence_boundaries()
         clips = []
         for window in windows:
-            start = self._snap_to_boundary(max(0.0, window.start - pad_seconds), boundaries)
-            end = self._snap_to_boundary(window.end + pad_seconds, boundaries)
+            start = self._snap_back(max(0.0, window.start - pad_seconds), sentence_starts)
+            end = self._snap_forward(window.end + pad_seconds, sentence_ends)
             if end <= start:
                 continue
+            if max_clip_seconds and end - start > max_clip_seconds:
+                start, end = self._trim_to_max(
+                    start, end, max_clip_seconds, sentence_starts, sentence_ends
+                )
             clips.append({
                 "start_time": start,
                 "end_time": end,
@@ -226,16 +252,89 @@ class ClipPipeline:
             })
         return clips
 
+    def _trim_to_max(self, start, end, max_seconds, sentence_starts, sentence_ends):
+        """Shortens an over-long clip while keeping both edges on sentence
+        boundaries. Keeps the opening (where the hook usually is) and pulls
+        the end back to the last sentence that still fits; if no sentence
+        end fits, keeps the original end so the clip stays coherent rather
+        than getting chopped mid-thought just to satisfy the cap.
+        """
+        candidates = [e for e in sentence_ends if start < e <= start + max_seconds]
+        if candidates:
+            return start, max(candidates)
+        # No sentence end fits (a stretch with no punctuation at all). Fall
+        # back to a segment edge, then to a hard cut, so the cap always
+        # holds -- returning `end` here would let a multi-minute clip
+        # through, which is worse than an imperfect edge.
+        seg_edges = [e for _, e in self._segment_boundaries()
+                     if start < e <= start + max_seconds]
+        if seg_edges:
+            return start, max(seg_edges)
+        return start, start + max_seconds
+
     def _segment_boundaries(self):
         if self.transcript is None:
             self.transcribe()
         return [(seg["start"], seg["start"] + seg["duration"]) for seg in self.transcript]
+
+    def sentence_boundaries(self):
+        """Returns (starts, ends): times where sentences begin and end.
+
+        Whisper segment edges break on pauses and Whisper's own ~30s
+        windowing, not on grammar, so snapping to them lands mid-sentence
+        constantly. Word-level timestamps (already requested for captions)
+        carry punctuation, so a word ending in .?! marks a real sentence end
+        and the next word starts the next sentence.
+
+        Falls back to segment edges when a transcript has no word timestamps
+        (e.g. an older cached transcript from before word_timestamps=True).
+        """
+        words = self.word_timestamps()
+        if not words:
+            pairs = self._segment_boundaries()
+            return sorted(p[0] for p in pairs), sorted(p[1] for p in pairs)
+
+        starts, ends = [], []
+        expecting_start = True
+        for word in words:
+            if expecting_start:
+                starts.append(word["start"])
+                expecting_start = False
+            if _SENTENCE_END_RE.search(word["word"]):
+                ends.append(word["end"])
+                expecting_start = True
+        if not expecting_start and words:
+            ends.append(words[-1]["end"])  # trailing words with no final punctuation
+        return sorted(starts), sorted(ends)
 
     @staticmethod
     def _snap_to_boundary(target: float, boundaries):
         if not boundaries:
             return target
         return min(boundaries, key=lambda b: abs(b - target))
+
+    @staticmethod
+    def _snap_back(target: float, boundaries, max_shift: float = MAX_SNAP_SHIFT):
+        """Nearest boundary at or before `target` -- for clip starts, so a
+        clip opens on a sentence start rather than partway into one.
+
+        `max_shift` bounds how far the snap may travel. Whisper does not
+        always emit punctuation (this video's last ~13 minutes have none at
+        all), so an unbounded search can run for minutes and swallow
+        unrelated material. Past the limit, keeping the original target is
+        the better failure: a slightly awkward edge beats a wrong clip.
+        """
+        earlier = [b for b in boundaries if target - max_shift <= b <= target]
+        return max(earlier) if earlier else target
+
+    @staticmethod
+    def _snap_forward(target: float, boundaries, max_shift: float = MAX_SNAP_SHIFT):
+        """Nearest boundary at or after `target` -- for clip ends, so a clip
+        closes on a finished sentence rather than mid-word. Bounded by
+        `max_shift` for the same reason as _snap_back.
+        """
+        later = [b for b in boundaries if target <= b <= target + max_shift]
+        return min(later) if later else target
 
     def _text_between(self, start: float, end: float) -> str:
         if self.transcript is None:
