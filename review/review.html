@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clip Review</title>
+<style>
+  :root {
+    --bg: #12131a; --panel: #1b1d27; --panel-2: #232633; --line: #31344a;
+    --text: #e7e9f3; --muted: #9aa0b8; --accent: #6ea8ff;
+    --good: #3ecf8e; --bad: #ff6b6b; --meh: #f0b23c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10; background: rgba(18,19,26,.95);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+    padding: 12px 20px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .progress { color: var(--muted); font-size: 13px; }
+  .progress b { color: var(--text); }
+  .spacer { flex: 1; }
+  button, select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 12px; font-size: 13px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { border-color: var(--accent); }
+  main { max-width: 900px; margin: 0 auto; padding: 20px; }
+  .clip {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 18px;
+  }
+  .clip.judged { opacity: .55; }
+  .clip.judged:hover { opacity: 1; }
+  .head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+  .time { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 20px;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+  }
+  .badge.selected { color: var(--accent); border-color: var(--accent); }
+  .badge.nearmiss { color: var(--meh); border-color: var(--meh); }
+  .badge.random { color: var(--muted); }
+  video { width: 100%; border-radius: 9px; background: #000; display: block; }
+  .scores { font-size: 12px; color: var(--muted); margin: 9px 0; font-variant-numeric: tabular-nums; }
+  .transcript {
+    background: var(--panel-2); border-radius: 8px; padding: 11px 13px; margin: 10px 0;
+    font-size: 13px; color: #c7cbe0; max-height: 105px; overflow-y: auto;
+  }
+  .verdicts { display: flex; gap: 8px; margin: 12px 0 8px; flex-wrap: wrap; }
+  .verdicts button { padding: 8px 18px; font-weight: 600; }
+  .verdicts button.on[data-v="good"] { background: var(--good); color: #06231a; border-color: var(--good); }
+  .verdicts button.on[data-v="meh"]  { background: var(--meh);  color: #2a1c02; border-color: var(--meh); }
+  .verdicts button.on[data-v="bad"]  { background: var(--bad);  color: #2c0707; border-color: var(--bad); }
+  .reasons { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .reasons button { font-size: 12px; padding: 5px 10px; border-radius: 20px; }
+  .reasons button.on { background: var(--accent); color: #06152e; border-color: var(--accent); font-weight: 600; }
+  .note {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--text); border-radius: 7px; padding: 8px 11px; font: inherit; font-size: 13px;
+  }
+  .empty { color: var(--muted); text-align: center; padding: 60px 20px; }
+  kbd {
+    background: var(--panel-2); border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 5px; font-size: 11px; font-family: ui-monospace, monospace;
+  }
+  .hint { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Clip Review</h1>
+  <div class="progress"><b id="done">0</b> / <span id="total">0</span> judged</div>
+  <div class="spacer"></div>
+  <span class="hint"><kbd>1</kbd> good <kbd>2</kbd> meh <kbd>3</kbd> bad</span>
+  <select id="filter">
+    <option value="all">All clips</option>
+    <option value="todo">Unjudged only</option>
+    <option value="selected">Selected only</option>
+    <option value="nearmiss">Near-miss only</option>
+    <option value="random">Random only</option>
+  </select>
+  <button id="toggleGroups">Show groups</button>
+</header>
+<main id="list"><div class="empty">Loading…</div></main>
+
+<script>
+const REASONS = ["ad read", "no hook", "bad start", "bad end", "boring", "needs context", "great moment"];
+let manifest = null, labels = {}, showGroups = false, focused = null;
+
+const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
+
+async function load() {
+  const [m, l] = await Promise.all([
+    fetch("/api/manifest").then(r => r.json()),
+    fetch("/api/labels").then(r => r.json()),
+  ]);
+  if (m.error) {
+    document.getElementById("list").innerHTML = `<div class="empty">${m.error}</div>`;
+    return;
+  }
+  manifest = m; labels = l;
+  document.getElementById("total").textContent = m.clips.length;
+  render();
+}
+
+function save(clip, patch) {
+  const cur = labels[clip.id] || { verdict: null, reasons: [], note: "" };
+  const next = { ...cur, ...patch };
+  if (next.verdict === null) delete labels[clip.id];
+  else labels[clip.id] = next;
+  updateProgress();
+  fetch("/api/labels", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: clip.id, verdict: next.verdict, reasons: next.reasons,
+      note: next.note, start: clip.start, end: clip.end, group: clip.group,
+    }),
+  });
+}
+
+function updateProgress() {
+  document.getElementById("done").textContent = Object.keys(labels).length;
+  for (const el of document.querySelectorAll(".clip")) {
+    el.classList.toggle("judged", !!labels[el.dataset.id]);
+  }
+}
+
+function visible() {
+  const f = document.getElementById("filter").value;
+  return manifest.clips.filter(c => {
+    if (f === "all") return true;
+    if (f === "todo") return !labels[c.id];
+    return c.group === f;
+  });
+}
+
+function render() {
+  const list = document.getElementById("list");
+  const clips = visible();
+  if (!clips.length) { list.innerHTML = `<div class="empty">Nothing here.</div>`; return; }
+
+  list.innerHTML = "";
+  for (const clip of clips) {
+    const lab = labels[clip.id] || { verdict: null, reasons: [], note: "" };
+    const sig = Object.entries(clip.signals || {})
+      .map(([k, v]) => `${k} ${v.toFixed(2)}`).join(" · ");
+
+    const el = document.createElement("div");
+    el.className = "clip" + (lab.verdict ? " judged" : "");
+    el.dataset.id = clip.id;
+    el.innerHTML = `
+      <div class="head">
+        <span class="time">${fmt(clip.start)}–${fmt(clip.end)}</span>
+        <span class="badge ${clip.group}" style="${showGroups ? "" : "display:none"}">${clip.group}</span>
+        <span class="badge">${Math.round(clip.end - clip.start)}s</span>
+      </div>
+      <video preload="metadata" controls src="/clips/${clip.file}"></video>
+      <div class="scores" style="${showGroups ? "" : "display:none"}">
+        fused ${clip.score.toFixed(2)}${sig ? " — " + sig : ""}
+      </div>
+      <div class="transcript">${(clip.text || "(no transcript)").replace(/</g, "&lt;")}</div>
+      <div class="verdicts">
+        ${["good", "meh", "bad"].map(v =>
+          `<button data-v="${v}" class="${lab.verdict === v ? "on" : ""}">${v}</button>`).join("")}
+      </div>
+      <div class="reasons">
+        ${REASONS.map(r =>
+          `<button data-r="${r}" class="${lab.reasons.includes(r) ? "on" : ""}">${r}</button>`).join("")}
+      </div>
+      <input class="note" placeholder="note (optional)" value="${(lab.note || "").replace(/"/g, "&quot;")}">
+    `;
+
+    el.querySelectorAll(".verdicts button").forEach(b => b.onclick = () => {
+      const v = b.dataset.v;
+      const cur = labels[clip.id]?.verdict;
+      const next = cur === v ? null : v;
+      el.querySelectorAll(".verdicts button").forEach(x =>
+        x.classList.toggle("on", x.dataset.v === next));
+      save(clip, { verdict: next });
+    });
+
+    el.querySelectorAll(".reasons button").forEach(b => b.onclick = () => {
+      const r = b.dataset.r;
+      const cur = labels[clip.id]?.reasons || [];
+      const next = cur.includes(r) ? cur.filter(x => x !== r) : [...cur, r];
+      b.classList.toggle("on", next.includes(r));
+      // A reason implies a judgment; default to bad unless already set.
+      save(clip, { reasons: next, verdict: labels[clip.id]?.verdict || "bad" });
+      el.querySelectorAll(".verdicts button").forEach(x =>
+        x.classList.toggle("on", x.dataset.v === (labels[clip.id]?.verdict)));
+    });
+
+    const note = el.querySelector(".note");
+    let t = null;
+    note.oninput = () => {
+      clearTimeout(t);
+      t = setTimeout(() => save(clip, {
+        note: note.value, verdict: labels[clip.id]?.verdict || "meh",
+      }), 500);
+    };
+
+    el.querySelector("video").addEventListener("play", () => { focused = clip; });
+    el.addEventListener("mouseenter", () => { focused = clip; });
+    list.appendChild(el);
+  }
+  updateProgress();
+}
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || !focused) return;
+  const map = { "1": "good", "2": "meh", "3": "bad" };
+  const v = map[e.key];
+  if (!v) return;
+  e.preventDefault();
+  const clip = focused;
+  const cur = labels[clip.id]?.verdict;
+  save(clip, { verdict: cur === v ? null : v });
+  const el = document.querySelector(`.clip[data-id="${CSS.escape(clip.id)}"]`);
+  el?.querySelectorAll(".verdicts button").forEach(x =>
+    x.classList.toggle("on", x.dataset.v === labels[clip.id]?.verdict));
+});
+
+document.getElementById("filter").onchange = render;
+document.getElementById("toggleGroups").onclick = e => {
+  showGroups = !showGroups;
+  e.target.textContent = showGroups ? "Hide groups" : "Show groups";
+  render();
+};
+
+load();
+</script>
+</body>
+</html>

@@ -5,3 +5,6 @@ test_output/
 segments/
 .env
 .env.*
+.cache_video/
+clip_labels.json
+review_clips/
