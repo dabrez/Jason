@@ -69,7 +69,7 @@ class QuizGenerator():
 
 # load_dotenv()            
 # b = QuizGenerator("https://youtu.be/-MTRxRO5SRA")
-# google.generativeai.configure(api_key="AIzaSyCHb1yl_9vM1C3_a9vJGROkfT_0iEcE0LM")
+# google.generativeai.configure(api_key=os.environ["GEMINI_API_KEY"])
 # asyncio.run(b.sendMessage(["0:00", "1:00"], True))
 # b.sendMessage(["0:00", "1:00"], True)
         
